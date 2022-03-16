@@ -1,5 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: nvidia-vaapi-driver
+Upstream-Contact: Stephen <elfarto@elfarto.com>
 Source: https://github.com/elFarto/nvidia-vaapi-driver
 
 Files: *
