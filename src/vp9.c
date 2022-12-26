@@ -33,8 +33,8 @@ static void copyVP9PicParam(NVContext *ctx, NVBuffer* buffer, CUVIDPICPARAMS *pi
     picParams->CodecSpecific.vp9.allow_high_precision_mv = buf->pic_fields.bits.allow_high_precision_mv;
     picParams->CodecSpecific.vp9.refreshEntropyProbs = buf->pic_fields.bits.refresh_frame_context;
 
-//    picParams->CodecSpecific.vp9.bitDepthMinus8Luma = buf->pic_fields.bits.;
-//    picParams->CodecSpecific.vp9.bitDepthMinus8Chroma = buf->pic_fields.bits.;
+    picParams->CodecSpecific.vp9.bitDepthMinus8Luma = buf->bit_depth - 8;
+    picParams->CodecSpecific.vp9.bitDepthMinus8Chroma = buf->bit_depth - 8;
 
     picParams->CodecSpecific.vp9.loopFilterLevel = buf->filter_level;
     picParams->CodecSpecific.vp9.loopFilterSharpness = buf->sharpness_level;
@@ -128,9 +128,9 @@ static void copyVP9SliceData(NVContext *ctx, NVBuffer* buf, CUVIDPICPARAMS *picP
     for (int i = 0; i < ctx->lastSliceParamsCount; i++)
     {
         VASliceParameterBufferVP9 *sliceParams = &((VASliceParameterBufferVP9*) ctx->lastSliceParams)[i];
-        uint32_t offset = (uint32_t) ctx->buf.size;
+        uint32_t offset = (uint32_t) ctx->bitstreamBuffer.size;
         appendBuffer(&ctx->sliceOffsets, &offset, sizeof(offset));
-        appendBuffer(&ctx->buf, PTROFF(buf->ptr, sliceParams->slice_data_offset), sliceParams->slice_data_size);
+        appendBuffer(&ctx->bitstreamBuffer, PTROFF(buf->ptr, sliceParams->slice_data_offset), sliceParams->slice_data_size);
 
         //TODO this might not be the best place to call as we may not have a complete packet yet...
         parseExtraInfo(PTROFF(buf->ptr, sliceParams->slice_data_offset), sliceParams->slice_data_size, picParams);
@@ -157,7 +157,7 @@ static const VAProfile vp9SupportedProfiles[] = {
     VAProfileVP9Profile3,
 };
 
-static const DECLARE_CODEC(vp9Codec) = {
+const DECLARE_CODEC(vp9Codec) = {
     .computeCudaCodec = computeVP9CudaCodec,
     .handlers = {
         [VAPictureParameterBufferType] = copyVP9PicParam,

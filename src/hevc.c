@@ -75,7 +75,7 @@ static void copyHEVCPicParam(NVContext *ctx, NVBuffer* buffer, CUVIDPICPARAMS *p
     picParams->bottom_field_flag = !!(buf->CurrPic.flags & VA_PICTURE_HEVC_BOTTOM_FIELD);
     picParams->second_field      = 0;
 
-    ctx->renderTargets->progressiveFrame = !picParams->field_pic_flag;
+    ctx->renderTarget->progressiveFrame = !picParams->field_pic_flag;
 
     picParams->ref_pic_flag      = 1;
     picParams->intra_pic_flag    = buf->slice_parsing_fields.bits.IntraPicFlag;
@@ -256,10 +256,10 @@ static void copyHEVCSliceData(NVContext *ctx, NVBuffer* buf, CUVIDPICPARAMS *pic
         static const uint8_t header[] = { 0, 0, 1 }; //1 as a 24-bit Big Endian
 
         VASliceParameterBufferH264 *sliceParams = &((VASliceParameterBufferH264*) ctx->lastSliceParams)[i];
-        uint32_t offset = (uint32_t) ctx->buf.size;
+        uint32_t offset = (uint32_t) ctx->bitstreamBuffer.size;
         appendBuffer(&ctx->sliceOffsets, &offset, sizeof(offset));
-        appendBuffer(&ctx->buf, header, sizeof(header));
-        appendBuffer(&ctx->buf, PTROFF(buf->ptr, sliceParams->slice_data_offset), sliceParams->slice_data_size);
+        appendBuffer(&ctx->bitstreamBuffer, header, sizeof(header));
+        appendBuffer(&ctx->bitstreamBuffer, PTROFF(buf->ptr, sliceParams->slice_data_offset), sliceParams->slice_data_size);
         picParams->nBitstreamDataLen += sliceParams->slice_data_size + 3;
     }
 }
@@ -294,7 +294,7 @@ static cudaVideoCodec computeHEVCCudaCodec(VAProfile profile) {
     switch (profile) {
         case VAProfileHEVCMain:
         case VAProfileHEVCMain10:
-        //case VAProfileHEVCMain12: //need to wait for ffmpeg to support this via VA-API
+        case VAProfileHEVCMain12:
             return cudaVideoCodec_HEVC;
         default:
             return cudaVideoCodec_NONE;
@@ -304,10 +304,10 @@ static cudaVideoCodec computeHEVCCudaCodec(VAProfile profile) {
 static const VAProfile hevcSupportedProfiles[] = {
     VAProfileHEVCMain,
     VAProfileHEVCMain10,
-    // VAProfileHEVCMain12,
+    VAProfileHEVCMain12,
 };
 
-static const DECLARE_CODEC(hevcCodec) = {
+const DECLARE_CODEC(hevcCodec) = {
     .computeCudaCodec = computeHEVCCudaCodec,
     .handlers = {
         [VAPictureParameterBufferType] = copyHEVCPicParam,
