@@ -5,6 +5,7 @@ Source: https://github.com/elFarto/nvidia-vaapi-driver
 
 Files: *
 Copyright: 2022 Stephen <elfarto@elfarto.com>
+           1993-2022 NVIDIA CORPORATION
 License: MIT
 
 Files: debian/*

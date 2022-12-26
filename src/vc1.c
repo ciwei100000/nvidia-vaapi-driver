@@ -10,7 +10,7 @@ static void copyVC1PicParam(NVContext *ctx, NVBuffer* buffer, CUVIDPICPARAMS *pi
     int interlaced = buf->picture_fields.bits.frame_coding_mode == 2;
     int field_mode = buf->sequence_fields.bits.interlace && interlaced;
 
-    ctx->renderTargets->progressiveFrame = !interlaced;
+    ctx->renderTarget->progressiveFrame = !interlaced;
     picParams->field_pic_flag    = buf->sequence_fields.bits.interlace && interlaced;
     picParams->bottom_field_flag = field_mode && !(buf->picture_fields.bits.top_field_first ^ !buf->picture_fields.bits.is_first_field);
 
@@ -77,9 +77,9 @@ static void copyVC1SliceData(NVContext *ctx, NVBuffer* buf, CUVIDPICPARAMS *picP
     for (int i = 0; i < ctx->lastSliceParamsCount; i++)
     {
         VASliceParameterBufferVC1 *sliceParams = &((VASliceParameterBufferVC1*) ctx->lastSliceParams)[i];
-        uint32_t offset = (uint32_t) ctx->buf.size;
+        uint32_t offset = (uint32_t) ctx->bitstreamBuffer.size;
         appendBuffer(&ctx->sliceOffsets, &offset, sizeof(offset));
-        appendBuffer(&ctx->buf, PTROFF(buf->ptr, sliceParams->slice_data_offset), sliceParams->slice_data_size);
+        appendBuffer(&ctx->bitstreamBuffer, PTROFF(buf->ptr, sliceParams->slice_data_offset), sliceParams->slice_data_size);
         picParams->nBitstreamDataLen += sliceParams->slice_data_size;
     }
 }
@@ -103,7 +103,7 @@ static const VAProfile vc1SupportedProfiles[] = {
     VAProfileVC1Advanced,
 };
 
-static const DECLARE_CODEC(vc1Codec) = {
+const DECLARE_CODEC(vc1Codec) = {
     .computeCudaCodec = computeVC1CudaCodec,
     .handlers = {
         [VAPictureParameterBufferType] = copyVC1PicParam,
