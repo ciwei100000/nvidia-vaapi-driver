@@ -1,3 +1,9 @@
+nvidia-vaapi-driver (0.0.10-1~c1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Lu YaNing <dluyaning@gmail.com>  Sat, 15 Jul 2023 02:39:57 -0700
+
 nvidia-vaapi-driver (0.0.8-1) unstable; urgency=medium
 
   * New upstream release.
