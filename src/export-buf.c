@@ -1,4 +1,5 @@
 #include "vabackend.h"
+#include "backend-common.h"
 #include <stdio.h>
 #include <ffnvcodec/dynlink_loader.h>
 #include <EGL/egl.h>
@@ -9,13 +10,8 @@
 #include <unistd.h>
 #include <sys/sysmacros.h>
 
-#if defined __has_include && __has_include(<libdrm/drm.h>)
-#  include <libdrm/drm.h>
-#  include <libdrm/drm_fourcc.h>
-#else
-#  include <drm/drm.h>
-#  include <drm/drm_fourcc.h>
-#endif
+#include <drm.h>
+#include <drm_fourcc.h>
 
 #ifndef EGL_NV_stream_consumer_eglimage
 #define EGL_NV_stream_consumer_eglimage 1
@@ -60,7 +56,7 @@ static void debug(EGLenum error,const char *command,EGLint messageType,EGLLabelK
     LOG("[EGL] %s: %s", command, message);
 }
 
-void egl_releaseExporter(NVDriver *drv) {
+static void egl_releaseExporter(NVDriver *drv) {
     //TODO not sure if this is still needed as we don't return anything now
     LOG("Releasing exporter, %d outstanding frames", drv->numFramesPresented);
     while (true) {
@@ -120,20 +116,6 @@ static bool reconnect(NVDriver *drv) {
     return true;
 }
 
-static bool checkModesetParameterFromFd(int fd) {
-    if (fd > 0) {
-        //this ioctl should fail if modeset=0
-        struct drm_get_cap caps = { .capability = DRM_CAP_DUMB_BUFFER };
-        int ret = ioctl(fd, DRM_IOCTL_GET_CAP, &caps);
-        if (ret != 0) {
-            //the modeset parameter is set to 0
-            LOG("ERROR: This driver requires the nvidia_drm.modeset kernel module parameter set to 1");
-            return false;
-        }
-    }
-    return true;
-}
-
 static void findGPUIndexFromFd(NVDriver *drv) {
     struct stat buf;
     int drmDeviceIndex;
@@ -156,8 +138,12 @@ static void findGPUIndexFromFd(NVDriver *drv) {
         //figure out the 'drm device index', basically the minor number of the device node & 0x7f
         //since we don't know/want to care if we're dealing with a master or render node
 
+        if (!isNvidiaDrmFd(drv->drmFd, true) || !checkModesetParameterFromFd(drv->drmFd)) {
+            return;
+        }
+
         fstat(drv->drmFd, &buf);
-        drmDeviceIndex = minor(buf.st_rdev) & 0x7f;
+        drmDeviceIndex = minor(buf.st_rdev);
         LOG("Looking for DRM device index: %d", drmDeviceIndex);
     } else {
         LOG("Looking for GPU index: %d", drv->cudaGpuId);
@@ -177,16 +163,16 @@ static void findGPUIndexFromFd(NVDriver *drv) {
         EGLAttrib attr = -1;
 
         //retrieve the DRM device path for this EGLDevice
-        const char* drmDeviceFile = eglQueryDeviceStringEXT(devices[i], EGL_DRM_DEVICE_FILE_EXT);
-        if (drmDeviceFile != NULL) {
+        const char* drmRenderNodeFile = eglQueryDeviceStringEXT(devices[i], EGL_DRM_RENDER_NODE_FILE_EXT);
+        if (drmRenderNodeFile != NULL) {
             //if we have one, try and get the CUDA device id
             if (eglQueryDeviceAttribEXT(devices[i], EGL_CUDA_DEVICE_NV, &attr)) {
                 LOG("Got EGL_CUDA_DEVICE_NV value '%d' for EGLDevice %d", attr, i);
 
                 //if we're looking for a matching drm device index check it here
                 if (drv->cudaGpuId == -1 && drv->drmFd != -1) {
-                    stat(drmDeviceFile, &buf);
-                    int foundDrmDeviceIndex = minor(buf.st_rdev) & 0x7f;
+                    stat(drmRenderNodeFile, &buf);
+                    int foundDrmDeviceIndex = minor(buf.st_rdev);
                     LOG("Found drmDeviceIndex: %d", foundDrmDeviceIndex);
                     if (foundDrmDeviceIndex != drmDeviceIndex) {
                         continue;
@@ -196,35 +182,16 @@ static void findGPUIndexFromFd(NVDriver *drv) {
                     continue;
                 }
 
-                bool closeDevice = false;
-                if (drv->drmFd == -1) {
-                    //we've found a matching device, but don't have an fd for it (likely running under X11)
-                    //so open it manually, but we need to remember to close it again afterwards
-                    const char* drmRenderNodeFile = eglQueryDeviceStringEXT(devices[i], EGL_DRM_RENDER_NODE_FILE_EXT);
-                    if (drmRenderNodeFile) {
-                        drv->drmFd = open(drmRenderNodeFile, O_RDWR);
-                        closeDevice = true;
-                    }
-                }
-
                 //if it's the device we're looking for, check the modeset parameter on it.
                 bool checkModeset = checkModesetParameterFromFd(drv->drmFd);
-
-                if (closeDevice && drv->drmFd != -1) {
-                    close(drv->drmFd);
-                    drv->drmFd = -1;
-                }
-
-                if  (!checkModeset) {
+                if (!checkModeset) {
                     continue;
                 }
-                //TODO it's likely if we get here with (gpu != -1 && foundDrmDeviceIndex != drmDeviceIndex)
-                //then the fd that was passed to us is not an NVIDIA GPU and we should try to implement some sort of optimus support
-                //We can't really rely on the return from checking EGL_CUDA_DEVICE_NV as some non-NVIDIA drivers claim they support it
 
                 LOG("Selecting EGLDevice %d", i);
                 drv->eglDevice = devices[i];
                 drv->cudaGpuId = attr;
+                return;
             } else {
                 LOG("No EGL_CUDA_DEVICE_NV support for EGLDevice %d", i);
             }
@@ -236,8 +203,13 @@ static void findGPUIndexFromFd(NVDriver *drv) {
     drv->cudaGpuId = 0;
 }
 
-bool egl_initExporter(NVDriver *drv) {
+static bool egl_initExporter(NVDriver *drv) {
     findGPUIndexFromFd(drv);
+
+    //if we didn't find an EGLDevice, then exit now
+    if (drv->eglDevice == NULL) {
+        return false;
+    }
 
     static const EGLAttrib debugAttribs[] = {EGL_DEBUG_MSG_WARN_KHR, EGL_TRUE, EGL_DEBUG_MSG_INFO_KHR, EGL_TRUE, EGL_NONE};
 
@@ -276,8 +248,6 @@ bool egl_initExporter(NVDriver *drv) {
     if (eglQueryDmaBufFormatsEXT(drv->eglDisplay, 64, formats, &formatCount)) {
         bool r16 = false, rg1616 = false;
         for (int i = 0; i < formatCount; i++) {
-            const char *fourcc = (const char *)&formats[i];
-            //LOG("Found format: %c%c%c%c", fourcc[0], fourcc[1], fourcc[2], fourcc[3]);
             if (formats[i] == DRM_FORMAT_R16) {
                 r16 = true;
             } else if (formats[i] == DRM_FORMAT_RG1616) {
@@ -285,6 +255,7 @@ bool egl_initExporter(NVDriver *drv) {
             }
         }
         drv->supports16BitSurface = r16 & rg1616;
+        drv->supports444Surface = false;
         if (drv->supports16BitSurface) {
             LOG("Driver supports 16-bit surfaces");
         } else {
@@ -331,7 +302,7 @@ static BackingImage* createBackingImage(NVDriver *drv, uint32_t width, uint32_t 
 }
 
 
-bool egl_destroyBackingImage(NVDriver *drv, BackingImage *img) {
+static bool egl_destroyBackingImage(NVDriver *drv, BackingImage *img) {
     //if we're attached to a surface, update the surface to remove us
     if (img->surface != NULL) {
         img->surface->backingImage = NULL;
@@ -354,12 +325,12 @@ bool egl_destroyBackingImage(NVDriver *drv, BackingImage *img) {
     return true;
 }
 
-void egl_attachBackingImageToSurface(NVSurface *surface, BackingImage *img) {
+static void egl_attachBackingImageToSurface(NVSurface *surface, BackingImage *img) {
     surface->backingImage = img;
     img->surface = surface;
 }
 
-void egl_detachBackingImageFromSurface(NVDriver *drv, NVSurface *surface) {
+static void egl_detachBackingImageFromSurface(NVDriver *drv, NVSurface *surface) {
     if (surface->backingImage == NULL) {
         LOG("Cannot detach NULL BackingImage from Surface");
         return;
@@ -387,7 +358,7 @@ void egl_detachBackingImageFromSurface(NVDriver *drv, NVSurface *surface) {
     surface->backingImage = NULL;
 }
 
-void egl_destroyAllBackingImage(NVDriver *drv) {
+static void egl_destroyAllBackingImage(NVDriver *drv) {
     pthread_mutex_lock(&drv->imagesMutex);
 
     ARRAY_FOR_EACH_REV(BackingImage*, it, &drv->images)
@@ -415,7 +386,7 @@ static BackingImage* findFreeBackingImage(NVDriver *drv, NVSurface *surface) {
 }
 
 
-BackingImage *egl_allocateBackingImage(NVDriver *drv, const NVSurface *surface) {
+static BackingImage *egl_allocateBackingImage(NVDriver *drv, const NVSurface *surface) {
     CUeglFrame eglframe = {
         .width = surface->width,
         .height = surface->height,
@@ -469,11 +440,12 @@ BackingImage *egl_allocateBackingImage(NVDriver *drv, const NVSurface *surface) 
     LOG("Presenting frame %d %dx%d (%p, %p, %p)", surface->pictureIdx, eglframe.width, eglframe.height, surface, eglframe.frame.pArray[0], eglframe.frame.pArray[1]);
     if (CHECK_CUDA_RESULT(drv->cu->cuEGLStreamProducerPresentFrame( &drv->cuStreamConnection, eglframe, NULL))) {
         //if we got an error here, try to reconnect to the EGLStream
-        if (!reconnect(drv)) {
+        if (!reconnect(drv) ||
+            CHECK_CUDA_RESULT(drv->cu->cuEGLStreamProducerPresentFrame( &drv->cuStreamConnection, eglframe, NULL))) {
+            pthread_mutex_unlock(&drv->exportMutex);
+
             return NULL;
         }
-        //and try again
-        CHECK_CUDA_RESULT_RETURN(drv->cu->cuEGLStreamProducerPresentFrame( &drv->cuStreamConnection, eglframe, NULL), NULL);
     }
 
     BackingImage *ret = NULL;
@@ -543,7 +515,7 @@ static bool copyFrameToSurface(NVDriver *drv, CUdeviceptr ptr, NVSurface *surfac
     return true;
 }
 
-bool egl_realiseSurface(NVDriver *drv, NVSurface *surface) {
+static bool egl_realiseSurface(NVDriver *drv, NVSurface *surface) {
     //make sure we're the only thread updating this surface
     pthread_mutex_lock(&surface->mutex);
     //check again to see if it's just been created
@@ -590,7 +562,7 @@ bool egl_realiseSurface(NVDriver *drv, NVSurface *surface) {
     return true;
 }
 
-bool egl_exportCudaPtr(NVDriver *drv, CUdeviceptr ptr, NVSurface *surface, uint32_t pitch) {
+static bool egl_exportCudaPtr(NVDriver *drv, CUdeviceptr ptr, NVSurface *surface, uint32_t pitch) {
     if (!egl_realiseSurface(drv, surface)) {
         return false;
     }
@@ -605,7 +577,7 @@ bool egl_exportCudaPtr(NVDriver *drv, CUdeviceptr ptr, NVSurface *surface, uint3
     return true;
 }
 
-bool egl_fillExportDescriptor(NVDriver *drv, NVSurface *surface, VADRMPRIMESurfaceDescriptor *desc) {
+static bool egl_fillExportDescriptor(NVDriver *drv, NVSurface *surface, VADRMPRIMESurfaceDescriptor *desc) {
     BackingImage *img = surface->backingImage;
 
     int bpp = img->fourcc == DRM_FORMAT_NV12 ? 1 : 2;

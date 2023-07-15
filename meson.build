@@ -5,7 +5,7 @@ project(
     default_options: [
         'prefix=/usr',
         'c_std=c11',
-        'warning_level=0',
+        'warning_level=2',
     ],
     license: 'MIT',
     meson_version: '>= 0.58.0',
@@ -13,16 +13,42 @@ project(
 
 cc = meson.get_compiler('c')
 
-m_dep = cc.find_library('m')
-dl_dep = cc.find_library('dl', required : false)
-egl_dep = cc.find_library('EGL')
+deps = [
+    cc.find_library('m'),
+    cc.find_library('dl', required : false),
+    dependency('egl'),
+    dependency('ffnvcodec', version: '>= 11.1.5.1'),
+    dependency('libva', version: '>= 1.8.0').partial_dependency(compile_args: true),
+    dependency('libdrm', version: '>=2.4.60').partial_dependency(compile_args: true),
+    dependency('threads'),
+]
 gst_codecs_deps = dependency('gstreamer-codecparsers-1.0', required: false)
-ffnvcodec_deps = dependency('ffnvcodec', version: '>= 11.1.5.1')
-libva_deps = dependency('libva', version: '>= 1.8.0')
-thread_dep = dependency('threads')
+
+if cc.get_argument_syntax() == 'gcc'
+    add_project_arguments(
+        cc.get_supported_arguments([
+            '-Wno-missing-field-initializers',
+            '-Wno-unused-parameter',
+            '-Werror=format',
+            '-Werror=format-security',
+            '-Werror=incompatible-pointer-types',
+            '-Werror=init-self',
+            '-Werror=int-conversion',
+            '-Werror=missing-declarations',
+            '-Werror=missing-prototypes',
+            '-Werror=pointer-arith',
+            '-Werror=undef',
+            '-Werror=vla',
+            '-Wsuggest-attribute=format',
+            '-Wwrite-strings',
+        ]),
+        language: ['c'],
+    )
+endif
 
 sources = [
     'src/av1.c',
+    'src/backend-common.c',
     'src/export-buf.c',
     'src/direct/direct-export-buf.c',
     'src/direct/nv-driver.c',
@@ -38,7 +64,8 @@ sources = [
 ]
 
 if gst_codecs_deps.found()
-    sources += ['src/vp9.c',]
+    sources += ['src/vp9.c']
+    deps += [gst_codecs_deps]
 endif
 
 nvidia_incdir = include_directories('nvidia-include')
@@ -47,15 +74,7 @@ shared_library(
     'nvidia_drv_video',
     name_prefix: '',
     sources: sources,
-    dependencies: [
-        libva_deps,
-        ffnvcodec_deps,
-        gst_codecs_deps,
-        egl_dep,
-        m_dep,
-        dl_dep,
-        thread_dep,
-    ],
+    dependencies: deps,
     include_directories: nvidia_incdir,
     install: true,
     install_dir: get_option('libdir') / 'dri',

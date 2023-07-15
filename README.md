@@ -35,7 +35,11 @@ Hardware decoding only, encoding is [not supported](/../../issues/116).
 |MPEG-4|:x:|VA-API does not supply enough of the original bitstream to allow NVDEC to decode it.|
 |JPEG|:x:|This is unlikely to ever work, the two APIs are too different.|
 
-YUV444 support is a work in progress [here](/../../pull/134).
+YUV444 is supported but requires:
+
+* \>= Turing (20XX/16XX)
+* HEVC
+* Direct backend
 
 To view which codecs your card is capable of decoding you can use the `vainfo` command with this driver installed, or visit the NVIDIA website [here](https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new#geforce).
 
@@ -52,8 +56,9 @@ To install and use `nvidia-vaapi-driver`, follow the steps in installation and c
 | Distribution | Package name |
 |---|---|
 | Arch<sup>AUR</sup> | [libva-nvidia-driver](https://aur.archlinux.org/packages/libva-nvidia-driver) |
-| Arch<sup>AUR</sup> | [nvidia-vaapi-driver-git](https://aur.archlinux.org/packages/nvidia-vaapi-driver-git) |
-| Debian,Ubuntu | nvidia-vaapi-driver<sup>[debian](https://packages.ubuntu.com/kinetic/nvidia-vaapi-driver) [ubuntu](https://packages.ubuntu.com/kinetic/nvidia-vaapi-driver)</sup> |
+| Arch<sup>AUR</sup> | [libva-nvidia-driver-git](https://aur.archlinux.org/packages/libva-nvidia-driver-git) |
+| Debian,Ubuntu | nvidia-vaapi-driver<sup>[debian](https://tracker.debian.org/pkg/nvidia-vaapi-driver) [ubuntu](https://packages.ubuntu.com/kinetic/nvidia-vaapi-driver)</sup> |
+| Fedora, RHEL and derivates (Rocky, Alma, etc).| [nvidia-vaapi-driver](https://github.com/rpmfusion/nvidia-vaapi-driver) |
 
 Feel free to add your distributions package in an issue/PR.
 
@@ -61,10 +66,11 @@ Feel free to add your distributions package in an issue/PR.
 
 You'll need `meson`, the `gstreamer-plugins-bad` library, and [`nv-codec-headers`](https://git.videolan.org/?p=ffmpeg/nv-codec-headers.git) installed.
 
-| Package manager | Packages                                        |
-|-----------------|-------------------------------------------------|
-| pacman          | meson gst-plugins-bad ffnvcodec-headers         |
-| apt             | meson gstreamer1.0-plugins-bad nv-codec-headers |
+| Package manager | Packages                                        | Optional packages for additional codec support |
+|-----------------|-------------------------------------------------|------------------------------------------------|
+| pacman          | meson gst-plugins-bad ffnvcodec-headers         |                                                |
+| apt             | meson gstreamer1.0-plugins-bad libffmpeg-nvenc-dev libva-dev libegl-dev | libgstreamer-plugins-bad1.0-dev   |
+| yum/dnf         | meson libva-devel gstreamer1-plugins-bad-freeworld nv-codec-headers | gstreamer1-plugins-bad-free-devel |
 
 Then run the following commands:
 
@@ -97,7 +103,7 @@ Environment variables used to control the behavior of this library.
 
 ## Firefox
 
-To use the driver with firefox you will need at least Firefox 96, the following config options need to be set in the `about:config` page:
+To use the driver with firefox you will need at least Firefox 96, `ffmpeg` compiled with vaapi support (search ffmpeg output for --enable-vaapi), and the following config options need to be set in the `about:config` page:
 
 | Option | Value | Reason |
 |---|---|---|
@@ -105,16 +111,25 @@ To use the driver with firefox you will need at least Firefox 96, the following 
 | media.rdd-ffmpeg.enabled | true | Required, default on FF97. Forces ffmpeg usage into the RDD process, rather than the content process. |
 | media.av1.enabled | false | Optional, disables AV1. If your GPU doesn't support AV1, this will prevent sites using it and falling back to software decoding. |
 | gfx.x11-egl.force-enabled | true | Required, this driver requires that Firefox use the EGL backend. It may be enabled by default. It is recommended to test it with the `MOZ_X11_EGL=1` environment variable before enabling it in the Firefox configuration. |
-| widget.dmabuf.force-enabled | true | Required on NVIDIA 470 series drivers, not required on 495+. Note that Firefox isn't coded to allow DMA-BUF support without GBM support, so it may not function completely correctly when it's forced on. |
+| widget.dmabuf.force-enabled | true | Required on NVIDIA 470 series drivers, and currently **REQUIRED** on 500+ drivers due to a [Firefox change](https://bugzilla.mozilla.org/show_bug.cgi?id=1788573). Note that Firefox isn't coded to allow DMA-BUF support without GBM support, so it may not function completely correctly when it's forced on. |
 
 In addition the following environment variables need to be set. For permanent configuration `/etc/environment` may suffice.
 
 | Variable | Value | Reason |
 |---|---|---|
-| LIBVA_DRIVER_NAME | nvidia | Forces libva to load the `nvidia` backend, as the current version doesn't know which driver to load for the nvidia-drm driver. |
 | MOZ_DISABLE_RDD_SANDBOX | 1 | Disables the sandbox for the RDD process that the decoder runs in. |
 | EGL_PLATFORM | wayland | Required on FF98+ when running on Wayland, due to a regression that has been introduced. |
+| LIBVA_DRIVER_NAME | nvidia | For libva versions prior to 2.15, this forces libva to load the `nvidia` backend. |
 | __EGL_VENDOR_LIBRARY_FILENAMES | /usr/share/glvnd/egl_vendor.d/10_nvidia.json | Required for the 470 driver series only. It overrides the list of drivers the glvnd library can use to prevent Firefox from using the MESA driver by mistake. |
+
+When libva is used it will log out some information, which can be excessive when Firefox initalises it multiple times per page. This logging can be suppressed by adding the following line to the `/etc/libva.conf` file:
+```
+LIBVA_MESSAGING_LEVEL=1
+```
+
+## Chrome
+
+Chrome is currently unsupported, and will not function.
 
 ## MPV
 
@@ -127,23 +142,12 @@ There's no real reason to run it with mpv except for testing, as mpv already sup
 The direct backend is a experimental backend that accesses the NVIDIA kernel driver directly, rather than using EGL to share the buffers. This allows us
 a greater degree of control over buffer allocation and freeing.
 
-**Generational compatibility**
-
-| Generation | Desktop | Mobile |
-|---|---|---|
-| <=Maxwell (<=9XX) | ❓ | ❓ |
-| Pascal (10XX) | ✅ | ❓ |
-| Turing (20XX/16XX) | ❓ | ✅ |
-| Ampere (30XX) | ✅ | ❓ |
-| Lovelace (40XX) | ❓ | ❓ |
-
-❓ - Unknown, let us know the test results of an unknown generation [here](/../../issues/126).
+The direct backend has been tested on a variety of hardware from the Kepler to Lovelace generations, and seems to be working fine. If you find any compatibility issues, please leave a comment [here](/../../issues/126).
 
 Given this backend accesses the NVIDIA driver directly, via NVIDIA's unstable API, this module is likely to break often with new versions of the kernel driver. If you encounter issues using this backend raise an issue and including logs generated by `NVD_LOG=1`.
 
 This backend uses headers files from the NVIDIA [open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules)
-project. The `extract_headers.sh` script, along with the `headers.in` file list which files we need, and will copy them from a checked out version of the NVIDIA project
-to the `nvidia-include` directory. This is done to prevent everyone needing to checkout that project.
+project. The `extract_headers.sh` script, along with the `headers.in` file list which files we need, and will copy them from a checked out version of the NVIDIA project to the `nvidia-include` directory. This is done to prevent everyone needing to checkout that project.
 
 # Testing
 
